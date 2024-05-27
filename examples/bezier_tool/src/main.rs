@@ -25,9 +25,11 @@ enum Message {
 impl Example {
     fn update(&mut self, message: Message) {
         match message {
+            //这个curve是由Bezier::update返回的(captured, some(curve))中的curve
             Message::AddCurve(curve) => {
                 self.curves.push(curve);
-                self.bezier.request_redraw();   //当新添加了一个curve时，整个画布的曲线的path就变了,需要重新绘制
+                //增加一个curve后,清除cache,重新绘制,绘制完后再存到cache,runtime就不会重复draw,使用cache里的geometry render就好了,提高性能
+                self.bezier.request_redraw();   
             }
             Message::Clear => {
                 self.bezier = bezier::State::default();
@@ -38,7 +40,9 @@ impl Example {
 
     fn view(&self) -> Element<Message> {
         container(hover(
-            self.bezier.view(&self.curves).map(Message::AddCurve),
+            //实际执行State的view:使用Example::curves作为参数创建canvas Bezier program,用Bezier的draw方法画出,把由Bezier::update返回的(captured, some(curve))中的curve做为AddCurve(curve)的curve返回给Example::update
+            //直观一点解释是显示使用Bezier的draw,消息传递是把Bezier::update映射成Example::update
+            self.bezier.view(&self.curves).map(Message::AddCurve),//view返回Element<'a, Curve> ,其中的curve随着程序的运行通过Bezier::update不断增加
             if self.curves.is_empty() {
                 container(horizontal_space())
             } else {
@@ -82,7 +86,8 @@ mod bezier {
     }
 
     impl State {
-        pub fn view<'a>(&'a self, curves: &'a [Curve]) -> Element<'a, Curve> {  //返回一个类型是画布的Element,这个Element的类型是Curve
+        //可以利用&Example
+        pub fn view<'a>(&'a self, curves: &'a [Curve]) -> Element<'a, Curve> {  //返回一个元素
             Canvas::new(Bezier {    //Bezier是一个struct，里面有一个state和一个curves,后面有对它实现canvas::Program trait,因此这个画布可以draw并且update,具体在impl Program里实现
                 state: self,
                 curves,
@@ -94,17 +99,17 @@ mod bezier {
         }
 
         pub fn request_redraw(&mut self) {
-            self.cache.clear(); //这个cache应该是已经绘制过的曲线的集合
+            self.cache.clear(); //这个cache应该是在绘制曲线的时候保存状态的,例如一个点,两个点，三个点，三个点后就是curve了,清理一下
         }
     }
-
+    //定义Bezier的fields是引用,这样就可以使用Example的curves
     struct Bezier<'a> { //Bezier是一个struct，里面有一个state和一个curves
-        state: &'a State,
-        curves: &'a [Curve],    //只有一个Curve也可以
+        state: &'a State,   //引用当前画布cache状态
+        curves: &'a [Curve],    //只有一个Curve也可以,这个curves是已成型曲线的集合
     }
 
     impl<'a> canvas::Program<Curve> for Bezier<'a> {
-        type State = Option<Pending>;   //Bezier的Program State定义here:Option<Pending>,它表示当前程序的状态,如果没有点击过按钮，那么它是None，如果有点击过一次按钮，那么它是Some(Pending::One),如果有点击过两次按钮，那么它是Some(Pending::Two)
+        type State = Option<Pending>;   //Bezier的Program State定义here:Option<Pending>,它表示当前程序的状态,如果没有点击过鼠标，那么它是None，如果有点击过一次，那么它是Some(Pending::One),如果有点击过两次，那么它是Some(Pending::Two),再点就是curve了
 
         fn update(
             &self,
@@ -123,23 +128,26 @@ mod bezier {
                         mouse::Event::ButtonPressed(mouse::Button::Left) => {
                             match *state {
                                 None => {
+                                    //如果有一个鼠标左键事件,并且当前Pending是None，那么就把它设置成Some(Pending::One)，这是bezier第一个点的位置
                                     *state = Some(Pending::One {
                                         from: cursor_position,
                                     });
-
+                                    //由于还没有形成一个bezier曲线，所以返回None
                                     None
                                 }
+                                //如果有一个鼠标左键事件,并且当前Pending是Some(Pending::One),那么就把它设置成Some(Pending::Two)，这是bezier第二个点的位置
                                 Some(Pending::One { from }) => {
                                     *state = Some(Pending::Two {
                                         from,
                                         to: cursor_position,
                                     });
-
+                                    //由于还没有形成一个bezier曲线，所以返回None
                                     None
                                 }
+                                //如果有一个鼠标左键事件,并且当前Pending是Some(Pending::Two),那么就重置state，把它设置成None，这是bezier第三个点的位置,curve完成
                                 Some(Pending::Two { from, to }) => {
                                     *state = None;
-
+                                    //返回一个Curve实例
                                     Some(Curve {    //如果已经有两个点，那么就通过当前鼠标的位置创建一个曲线
                                         from,
                                         to,
@@ -156,7 +164,7 @@ mod bezier {
                 _ => (event::Status::Ignored, None),    //其他事件不处理
             }
         }
-
+        //返回geometry,供view去render
         fn draw(
             &self,
             state: &Self::State,
@@ -165,11 +173,10 @@ mod bezier {
             bounds: Rectangle,
             cursor: mouse::Cursor,
         ) -> Vec<Geometry> {
+            //使用cache的draw方法绘制,这样可以减少重绘的次数,提高性能
             let content =
                 self.state.cache.draw(renderer, bounds.size(), |frame| {
                     Curve::draw_all(self.curves, frame, theme);
-                    /*Curve::draw_all(self.curves, frame);*/
-
                     frame.stroke(   //把最外面的方框图画出来
                         &Path::rectangle(Point::ORIGIN, frame.size()),
                         Stroke::default()
@@ -215,6 +222,7 @@ mod bezier {
     }
 
     impl Curve {
+        //这里的frame需要用到Program::draw里的cache的draw方法，所以是&mut frame
         fn draw_all(curves: &[Curve], frame: &mut Frame, theme: &Theme) {
             let curves = Path::new(|p| {
                 for curve in curves {
