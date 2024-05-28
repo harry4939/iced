@@ -86,7 +86,7 @@ mod bezier {
     }
 
     impl State {
-        //可以利用&Example
+        //返回一个Element<'a, Curve>,其中的curve是通过Bezier::update返回的(captured, some(curve))中的curve,传给Example::update,通过Example::update放到Example::curves
         pub fn view<'a>(&'a self, curves: &'a [Curve]) -> Element<'a, Curve> {  //返回一个元素
             Canvas::new(Bezier {    //Bezier是一个struct，里面有一个state和一个curves,后面有对它实现canvas::Program trait,因此这个画布可以draw并且update,具体在impl Program里实现
                 state: self,
@@ -110,7 +110,7 @@ mod bezier {
 
     impl<'a> canvas::Program<Curve> for Bezier<'a> {
         type State = Option<Pending>;   //Bezier的Program State定义here:Option<Pending>,它表示当前程序的状态,如果没有点击过鼠标，那么它是None，如果有点击过一次，那么它是Some(Pending::One),如果有点击过两次，那么它是Some(Pending::Two),再点就是curve了
-
+        //program的这个update实际是update画布view的message,它会返回Curve,把这个Curve传递给Message::AddCurve(curve),再传递给主程序Example::update
         fn update(
             &self,
             state: &mut Self::State,    //这个state是可变的,因为update方法要改变当前程序的状态
@@ -164,7 +164,7 @@ mod bezier {
                 _ => (event::Status::Ignored, None),    //其他事件不处理
             }
         }
-        //返回geometry,供view去render
+        //在canvas上画geometry,供view去render
         fn draw(
             &self,
             state: &Self::State,
